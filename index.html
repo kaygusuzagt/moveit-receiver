@@ -7,15 +7,17 @@
   <script src="https://www.gstatic.com/cast/sdk/libs/caf_receiver/v3/cast_receiver_framework.js"></script>
   <style>
     html, body { margin: 0; height: 100%; background: #000; overflow: hidden; }
-    canvas { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; }
+    canvas, video { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; background: #000; }
+    video { display: none; }
     #status { position: absolute; left: 3vw; top: 3vh; color: #fff; font: 600 3vh system-ui, sans-serif; opacity: .9; }
     #stats { position: absolute; right: 2vw; bottom: 2vh; color: #9f9; font: 1.8vh ui-monospace, monospace; white-space: pre; display: none; }
   </style>
 </head>
 <body>
   <canvas id="screen" width="1280" height="720"></canvas>
+  <video id="video" muted autoplay playsinline></video>
   <div id="status">Move IT — waiting for the phone…</div>
   <div id="stats"></div>
-  <script src="receiver.js"></script>
+  <script src="receiver.js?v=2"></script>
 </body>
 </html>
