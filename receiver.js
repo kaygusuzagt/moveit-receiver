@@ -11,9 +11,9 @@ const statusEl = document.getElementById('status');
 const statsEl = document.getElementById('stats');
 
 const diagEl = document.getElementById('diag');
-const diag = { version: 'v4', messages: 0, last: '-', error: '' };
+const diag = { version: 'v5', messages: 0, last: '-', error: '', frames: 0, kb: 0 };
 function showDiag() {
-  if (diagEl) diagEl.textContent = `receiver ${diag.version} · webcodecs ${hasWebCodecs} · mse ${hasMSE} · msgs ${diag.messages} · last ${diag.last}${diag.error ? ' · ' + diag.error : ''}`;
+  if (diagEl) diagEl.textContent = `receiver ${diag.version} · webcodecs ${hasWebCodecs} · mse ${hasMSE} · msgs ${diag.messages} · frames ${diag.frames} · ${Math.round(diag.kb)} KB · last ${diag.last} · decoder ${decoder ? decoder.name : 'none'}${diag.error ? ' · ' + diag.error : ''}`;
 }
 window.onerror = (msg, src, line, col) => {
   diag.error = 'ERROR ' + msg + ' @' + line + ':' + col;
@@ -332,6 +332,8 @@ function onFrameChunk(m) {
   }
   if (entry.received < entry.n) return;
   partial.delete(m.id);
+  diag.frames++;
+  diag.kb += entry.parts.reduce((n, p) => n + p.length, 0) * 0.75 / 1024;
   for (const id of partial.keys()) if (id < m.id) { partial.delete(id); stats.dropped++; }
   const bytes = base64ToBytes(entry.parts.join(''));
   if (!decoder && entry.k) {
