@@ -10,6 +10,7 @@
     canvas, video { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; background: #000; }
     video { display: none; }
     #status { position: absolute; left: 3vw; top: 3vh; color: #fff; font: 600 3vh system-ui, sans-serif; opacity: .9; }
+    #diag { position: absolute; left: 2vw; bottom: 2vh; color: #ff9; font: 1.8vh ui-monospace, monospace; white-space: pre; opacity: .85; }
     #stats { position: absolute; right: 2vw; bottom: 2vh; color: #9f9; font: 1.8vh ui-monospace, monospace; white-space: pre; display: none; }
   </style>
 </head>
@@ -18,6 +19,13 @@
   <video id="video" muted autoplay playsinline></video>
   <div id="status">Move IT — waiting for the phone…</div>
   <div id="stats"></div>
-  <script src="receiver.js?v=2"></script>
+  <div id="diag">receiver page v3 loaded · waiting for script…</div>
+  <script>
+    // Show load errors on the TV (no remote debugging on this device).
+    window.onerror = function (msg, src, line, col) {
+      document.getElementById('diag').textContent = 'SCRIPT ERROR: ' + msg + ' @' + line + ':' + col;
+    };
+  </script>
+  <script src="receiver.js?v=3"></script>
 </body>
 </html>

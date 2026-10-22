@@ -10,6 +10,17 @@ const video = document.getElementById('video');
 const statusEl = document.getElementById('status');
 const statsEl = document.getElementById('stats');
 
+const diagEl = document.getElementById('diag');
+const diag = { version: 'v3', messages: 0, last: '-', error: '' };
+function showDiag() {
+  if (diagEl) diagEl.textContent = `receiver ${diag.version} · webcodecs ${hasWebCodecs} · mse ${hasMSE} · msgs ${diag.messages} · last ${diag.last}${diag.error ? ' · ' + diag.error : ''}`;
+}
+window.onerror = (msg, src, line, col) => {
+  diag.error = 'ERROR ' + msg + ' @' + line + ':' + col;
+  showDiag();
+  send({ t: 'error', reason: 'script', detail: diag.error });
+};
+
 const context = cast.framework.CastReceiverContext.getInstance();
 const hasWebCodecs = typeof window.VideoDecoder === 'function';
 const hasMSE = typeof window.MediaSource === 'function';
@@ -327,7 +338,10 @@ function onFrameChunk(m) {
 
 context.addCustomMessageListener(NAMESPACE, (event) => {
   sender = event.senderId;
-  const m = event.data;
+  const m = typeof event.data === 'string' ? JSON.parse(event.data) : event.data;
+  diag.messages++;
+  diag.last = m.t;
+  if (m.t !== 'f' || diag.messages % 30 === 0) showDiag();
   switch (m.t) {
     case 'hello':
       send({
@@ -371,3 +385,4 @@ options.customNamespaces = { [NAMESPACE]: cast.framework.system.MessageType.JSON
 options.disableIdleTimeout = true; // no media is "playing" via CAF, so keep the receiver alive while connected
 options.skipPlayersLoad = true;    // we do not use the CAF media player
 context.start(options);
+showDiag();
