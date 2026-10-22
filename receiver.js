@@ -11,7 +11,7 @@ const statusEl = document.getElementById('status');
 const statsEl = document.getElementById('stats');
 
 const diagEl = document.getElementById('diag');
-const diag = { version: 'v7', messages: 0, last: '-', error: '', frames: 0, kb: 0 };
+const diag = { version: 'v8', messages: 0, last: '-', error: '', frames: 0, kb: 0 };
 function showDiag() {
   if (diagEl) diagEl.textContent = `receiver ${diag.version} · webcodecs ${hasWebCodecs} · mse ${hasMSE} · msgs ${diag.messages} · frames ${diag.frames} · ${Math.round(diag.kb)} KB · last ${diag.last} · decoder ${decoder ? decoder.name : 'none'} · webrtc ${typeof window.RTCPeerConnection === 'function'}${diag.buffer !== undefined ? ' · behind ' + Math.round(diag.buffer * 1000) + ' ms x' + diag.rate : ''}${diag.error ? ' · ' + diag.error : ''}${diag.rtcLine ? '\n' + diag.rtcLine : ''}`;
 }
@@ -488,6 +488,7 @@ context.addCustomMessageListener(NAMESPACE, (event) => {
       send({ t: 'pong', s: m.s });
       break;
     case 'stop':
+      if (pc) { pc.close(); pc = null; diag.rtcLine = ''; video.srcObject = null; }
       setStatus('Stream stopped on the phone.');
       break;
     case 'debug':

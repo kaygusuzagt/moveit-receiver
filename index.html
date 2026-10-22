@@ -19,13 +19,13 @@
   <video id="video" muted autoplay playsinline></video>
   <div id="status">Move IT — waiting for the phone…</div>
   <div id="stats"></div>
-  <div id="diag">receiver page v7 loaded · waiting for script…</div>
+  <div id="diag">receiver page v8 loaded · waiting for script…</div>
   <script>
     // Show load errors on the TV (no remote debugging on this device).
     window.onerror = function (msg, src, line, col) {
       document.getElementById('diag').textContent = 'SCRIPT ERROR: ' + msg + ' @' + line + ':' + col;
     };
   </script>
-  <script src="receiver.js?v=7"></script>
+  <script src="receiver.js?v=8"></script>
 </body>
 </html>
