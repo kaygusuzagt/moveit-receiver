@@ -11,9 +11,9 @@ const statusEl = document.getElementById('status');
 const statsEl = document.getElementById('stats');
 
 const diagEl = document.getElementById('diag');
-const diag = { version: 'v5', messages: 0, last: '-', error: '', frames: 0, kb: 0 };
+const diag = { version: 'v6', messages: 0, last: '-', error: '', frames: 0, kb: 0 };
 function showDiag() {
-  if (diagEl) diagEl.textContent = `receiver ${diag.version} · webcodecs ${hasWebCodecs} · mse ${hasMSE} · msgs ${diag.messages} · frames ${diag.frames} · ${Math.round(diag.kb)} KB · last ${diag.last} · decoder ${decoder ? decoder.name : 'none'}${diag.error ? ' · ' + diag.error : ''}`;
+  if (diagEl) diagEl.textContent = `receiver ${diag.version} · webcodecs ${hasWebCodecs} · mse ${hasMSE} · msgs ${diag.messages} · frames ${diag.frames} · ${Math.round(diag.kb)} KB · last ${diag.last} · decoder ${decoder ? decoder.name : 'none'} · webrtc ${typeof window.RTCPeerConnection === 'function'}${diag.buffer !== undefined ? ' · behind ' + Math.round(diag.buffer * 1000) + ' ms x' + diag.rate : ''}${diag.error ? ' · ' + diag.error : ''}`;
 }
 window.onerror = (msg, src, line, col) => {
   diag.error = 'ERROR ' + msg + ' @' + line + ':' + col;
@@ -53,7 +53,7 @@ function frameShown(id, startedAt) {
     stats.decodeMs.push(performance.now() - startedAt);
     if (stats.decodeMs.length > 60) stats.decodeMs.shift();
   }
-  send({ t: 'ack', id });
+  send({ t: 'shown', id });
 }
 
 function requestKeyframe() {
@@ -198,6 +198,9 @@ class MseDecoder {
     this.duration = Math.round(this.timescale / (cfg.fps || 30));
     this.sequence = 1;
     this.sampleIndex = 0;
+    this.t0 = null;
+    this.lastDecodeTime = -1;
+    this.times = new Map();        // sample index -> decode time (s)
     this.queue = [];
     this.pending = new Map();      // sample index -> { id, appendedAt }
     this.initialized = false;
@@ -248,7 +251,15 @@ class MseDecoder {
     this.needKey = false;
     const index = this.sampleIndex++;
     const sample = Mp4.concat(...parts);
-    this.queue.push({ index, id, data: Mp4.segment(this.sequence++, index * this.duration, this.duration, isKey, sample) });
+    // Timestamp = arrival time, so playback follows the real frame pacing instead of an assumed 30 fps.
+    const now = performance.now();
+    if (this.t0 === null) this.t0 = now;
+    let decodeTime = Math.round((now - this.t0) / 1000 * this.timescale);
+    if (decodeTime <= this.lastDecodeTime) decodeTime = this.lastDecodeTime + 1;
+    this.lastDecodeTime = decodeTime;
+    this.times.set(index, decodeTime / this.timescale);
+    // Duration covers jitter (the next frame's timestamp cuts it short), so there are no gaps that stall playback.
+    this.queue.push({ index, id, data: Mp4.segment(this.sequence++, decodeTime, this.duration * 3, isKey, sample) });
     this.pump();
   }
 
@@ -268,9 +279,19 @@ class MseDecoder {
   onUpdateEnd() {
     const buffered = video.buffered;
     if (buffered.length) {
-      const end = buffered.end(buffered.length - 1);
-      // Stay at the live edge: never let playback lag the newest frame by more than ~3 frames.
-      if (end - video.currentTime > 0.12) video.currentTime = Math.max(buffered.start(buffered.length - 1), end - 0.04);
+      // Newest frame's start time (its duration is padded, so buffered.end overstates the live edge).
+      const newest = this.lastDecodeTime / this.timescale;
+      const behind = newest - video.currentTime;
+      diag.buffer = behind;
+      if (behind > 0.5 || video.currentTime < buffered.start(buffered.length - 1)) {
+        video.currentTime = Math.max(buffered.start(buffered.length - 1), newest - 0.05);   // far behind: jump
+        diag.rate = 1;
+      } else {
+        // Close to live: catch up smoothly instead of jumping (jumps skip frames and stutter).
+        const rate = behind > 0.15 ? 1.25 : behind > 0.08 ? 1.1 : 1.0;
+        if (video.playbackRate !== rate) video.playbackRate = rate;
+        diag.rate = rate;
+      }
       if (video.paused) video.play().catch(() => {});
       // Trim old media so memory does not grow.
       if (video.currentTime - buffered.start(0) > 10 && !this.sb.updating) {
@@ -287,11 +308,14 @@ class MseDecoder {
   }
 
   onFrame(now, meta) {
-    const index = Math.round(meta.mediaTime * this.timescale / this.duration);
+    // The presented frame is the newest pending sample whose timestamp is <= mediaTime.
+    let shown = -1;
+    for (const [i] of this.pending) if (this.times.get(i) <= meta.mediaTime + 0.001 && i > shown) shown = i;
     for (const [i, p] of this.pending) {
-      if (i > index) continue;
-      if (i === index) frameShown(p.id, p.appendedAt); else stats.dropped++;
+      if (i > shown) continue;
+      if (i === shown) frameShown(p.id, p.appendedAt); else stats.dropped++;
       this.pending.delete(i);
+      this.times.delete(i);
     }
     video.requestVideoFrameCallback((n, m) => this.onFrame(n, m));
   }
@@ -332,6 +356,9 @@ function onFrameChunk(m) {
   }
   if (entry.received < entry.n) return;
   partial.delete(m.id);
+  // Acknowledge on arrival: the phone uses acks only for flow control, so a slow video path on the TV
+  // must not make the phone skip frames.
+  send({ t: 'ack', id: m.id });
   diag.frames++;
   diag.kb += entry.parts.reduce((n, p) => n + p.length, 0) * 0.75 / 1024;
   for (const id of partial.keys()) if (id < m.id) { partial.delete(id); stats.dropped++; }
@@ -361,7 +388,7 @@ context.addCustomMessageListener(NAMESPACE, (event) => {
   switch (m.t) {
     case 'hello':
       send({
-        t: 'hello', webcodecs: hasWebCodecs, mse: hasMSE,
+        t: 'hello', webcodecs: hasWebCodecs, mse: hasMSE, webrtc: typeof window.RTCPeerConnection === 'function',
         decoder: hasWebCodecs ? 'webcodecs' : hasMSE ? 'mse' : 'none',
         ua: navigator.userAgent, w: window.innerWidth, h: window.innerHeight,
       });
