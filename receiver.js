@@ -11,7 +11,7 @@ const statusEl = document.getElementById('status');
 const statsEl = document.getElementById('stats');
 
 const diagEl = document.getElementById('diag');
-const diag = { version: 'v3', messages: 0, last: '-', error: '' };
+const diag = { version: 'v4', messages: 0, last: '-', error: '' };
 function showDiag() {
   if (diagEl) diagEl.textContent = `receiver ${diag.version} · webcodecs ${hasWebCodecs} · mse ${hasMSE} · msgs ${diag.messages} · last ${diag.last}${diag.error ? ' · ' + diag.error : ''}`;
 }
@@ -333,7 +333,21 @@ function onFrameChunk(m) {
   if (entry.received < entry.n) return;
   partial.delete(m.id);
   for (const id of partial.keys()) if (id < m.id) { partial.delete(id); stats.dropped++; }
-  if (decoder) decoder.push(m.id, entry.k, base64ToBytes(entry.parts.join('')));
+  const bytes = base64ToBytes(entry.parts.join(''));
+  if (!decoder && entry.k) {
+    // No "cfg" received (e.g. after a reconnect): derive the codec from the keyframe's SPS.
+    const sps = splitAnnexB(bytes).find((nal) => (nal[0] & 0x1f) === 7);
+    if (sps) {
+      const hex = (b) => (b < 16 ? '0' : '') + b.toString(16).toUpperCase();
+      configure({ codec: 'avc1.' + hex(sps[1]) + hex(sps[2]) + hex(sps[3]), w: 1280, h: 720, fps: 30 });
+    }
+  }
+  if (decoder) decoder.push(m.id, entry.k, bytes);
+  else {
+    stats.dropped++;
+    const now = performance.now();
+    if (!diag.lastKeyRequest || now - diag.lastKeyRequest > 1000) { diag.lastKeyRequest = now; requestKeyframe(); }
+  }
 }
 
 context.addCustomMessageListener(NAMESPACE, (event) => {
