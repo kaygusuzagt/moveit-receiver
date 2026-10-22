@@ -11,9 +11,9 @@ const statusEl = document.getElementById('status');
 const statsEl = document.getElementById('stats');
 
 const diagEl = document.getElementById('diag');
-const diag = { version: 'v6', messages: 0, last: '-', error: '', frames: 0, kb: 0 };
+const diag = { version: 'v7', messages: 0, last: '-', error: '', frames: 0, kb: 0 };
 function showDiag() {
-  if (diagEl) diagEl.textContent = `receiver ${diag.version} · webcodecs ${hasWebCodecs} · mse ${hasMSE} · msgs ${diag.messages} · frames ${diag.frames} · ${Math.round(diag.kb)} KB · last ${diag.last} · decoder ${decoder ? decoder.name : 'none'} · webrtc ${typeof window.RTCPeerConnection === 'function'}${diag.buffer !== undefined ? ' · behind ' + Math.round(diag.buffer * 1000) + ' ms x' + diag.rate : ''}${diag.error ? ' · ' + diag.error : ''}`;
+  if (diagEl) diagEl.textContent = `receiver ${diag.version} · webcodecs ${hasWebCodecs} · mse ${hasMSE} · msgs ${diag.messages} · frames ${diag.frames} · ${Math.round(diag.kb)} KB · last ${diag.last} · decoder ${decoder ? decoder.name : 'none'} · webrtc ${typeof window.RTCPeerConnection === 'function'}${diag.buffer !== undefined ? ' · behind ' + Math.round(diag.buffer * 1000) + ' ms x' + diag.rate : ''}${diag.error ? ' · ' + diag.error : ''}${diag.rtcLine ? '\n' + diag.rtcLine : ''}`;
 }
 window.onerror = (msg, src, line, col) => {
   diag.error = 'ERROR ' + msg + ' @' + line + ':' + col;
@@ -328,6 +328,83 @@ class MseDecoder {
   }
 }
 
+// ---------------------------------------------------------------- WebRTC (direct video; Cast carries only setup)
+
+let pc = null;
+let rtcPrev = null;
+
+function rtcCodecs() {
+  try {
+    const caps = window.RTCRtpReceiver && RTCRtpReceiver.getCapabilities && RTCRtpReceiver.getCapabilities('video');
+    return caps ? [...new Set(caps.codecs.map((c) => c.mimeType))] : [];
+  } catch (e) { return ['error: ' + e.message]; }
+}
+
+async function onRtcOffer(m) {
+  if (pc) pc.close();
+  rtcPrev = null;
+  if (decoder) { decoder.close(); decoder = null; config = null; }
+  pc = new RTCPeerConnection({ iceServers: [] });   // local network only: host candidates
+  pc.onicecandidate = (e) => { if (e.candidate) send({ t: 'rtc-ice', c: e.candidate.toJSON() }); };
+  pc.onconnectionstatechange = () => {
+    diag.rtc = pc.connectionState;
+    showDiag();
+    send({ t: 'rtc-state', s: pc.connectionState });
+  };
+  pc.ontrack = (e) => {
+    // Ask for the smallest jitter buffer the browser allows.
+    try {
+      if ('jitterBufferTarget' in e.receiver) e.receiver.jitterBufferTarget = 0;
+      if ('playoutDelayHint' in e.receiver) e.receiver.playoutDelayHint = 0;
+    } catch (err) { /* not supported */ }
+    canvas.style.display = 'none';
+    video.style.display = 'block';
+    video.removeAttribute('src');
+    video.srcObject = e.streams[0] || new MediaStream([e.track]);
+    video.play().catch(() => {});
+    setStatus('');
+  };
+  await pc.setRemoteDescription({ type: 'offer', sdp: m.sdp });
+  const answer = await pc.createAnswer();
+  await pc.setLocalDescription(answer);
+  send({ t: 'rtc-answer', sdp: pc.localDescription.sdp });
+}
+
+async function rtcStats() {
+  if (!pc) return null;
+  const report = await pc.getStats();
+  let inbound = null, pair = null;
+  const byId = {};
+  report.forEach((s) => {
+    byId[s.id] = s;
+    if (s.type === 'inbound-rtp' && (s.kind === 'video' || s.mediaType === 'video')) inbound = s;
+    if (s.type === 'candidate-pair' && s.state === 'succeeded' && (s.nominated || !pair)) pair = s;
+  });
+  if (!inbound) return { state: pc.connectionState };
+  const prev = rtcPrev || {};
+  const d = (k) => (inbound[k] || 0) - (prev[k] || 0);
+  const emitted = d('jitterBufferEmittedCount');
+  const decoded = d('framesDecoded');
+  rtcPrev = { ...inbound };
+  const local = pair && byId[pair.localCandidateId];
+  const remote = pair && byId[pair.remoteCandidateId];
+  return {
+    state: pc.connectionState,
+    codec: inbound.codecId && byId[inbound.codecId] ? byId[inbound.codecId].mimeType : '?',
+    fps: inbound.framesPerSecond || decoded,
+    size: (inbound.frameWidth || 0) + 'x' + (inbound.frameHeight || 0),
+    framesDecoded: inbound.framesDecoded || 0,
+    framesDropped: inbound.framesDropped || 0,
+    jitterMs: emitted > 0 ? Math.round(1000 * d('jitterBufferDelay') / emitted) : null,
+    decodeMs: decoded > 0 ? Math.round(10000 * d('totalDecodeTime') / decoded) / 10 : null,
+    packetsLost: inbound.packetsLost || 0,
+    freezes: inbound.freezeCount || 0,
+    kbps: Math.round(d('bytesReceived') * 8 / 1000),
+    rttMs: pair && pair.currentRoundTripTime !== undefined ? Math.round(pair.currentRoundTripTime * 1000) : null,
+    path: (local ? local.candidateType : '?') + '/' + (remote ? remote.candidateType : '?'),
+  };
+}
+
 // ---------------------------------------------------------------- stream handling
 
 function configure(cfg) {
@@ -389,6 +466,7 @@ context.addCustomMessageListener(NAMESPACE, (event) => {
     case 'hello':
       send({
         t: 'hello', webcodecs: hasWebCodecs, mse: hasMSE, webrtc: typeof window.RTCPeerConnection === 'function',
+        rtcCodecs: rtcCodecs(),
         decoder: hasWebCodecs ? 'webcodecs' : hasMSE ? 'mse' : 'none',
         ua: navigator.userAgent, w: window.innerWidth, h: window.innerHeight,
       });
@@ -399,6 +477,12 @@ context.addCustomMessageListener(NAMESPACE, (event) => {
       break;
     case 'f':
       onFrameChunk(m);
+      break;
+    case 'rtc-offer':
+      onRtcOffer(m).catch((e) => { diag.error = 'RTC ' + e.message; showDiag(); send({ t: 'rtc-error', message: e.message }); });
+      break;
+    case 'rtc-ice':
+      if (pc && m.c) pc.addIceCandidate(m.c).catch((e) => send({ t: 'rtc-error', message: 'ice: ' + e.message }));
       break;
     case 'ping':
       send({ t: 'pong', s: m.s });
@@ -412,7 +496,15 @@ context.addCustomMessageListener(NAMESPACE, (event) => {
   }
 });
 
-setInterval(() => {
+setInterval(async () => {
+  if (pc) {
+    const r = await rtcStats().catch((e) => ({ error: e.message }));
+    if (r) {
+      send(Object.assign({ t: 'rtcstats' }, r));
+      diag.rtcLine = `RTC ${r.state} ${r.codec || ''} ${r.size || ''} fps ${r.fps} jitter ${r.jitterMs} ms decode ${r.decodeMs} ms dropped ${r.framesDropped} lost ${r.packetsLost} rtt ${r.rttMs} ${r.path || ''}`;
+      showDiag();
+    }
+  }
   const now = performance.now();
   stats.window = stats.window.filter((t) => t > now - 1000);
   const sorted = [...stats.decodeMs].sort((a, b) => a - b);
